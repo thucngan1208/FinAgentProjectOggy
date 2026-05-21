@@ -1,0 +1,12 @@
+# Environment variables
+.env
+
+# Python compilation files
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Charts/Outputs (Optional, but often you don't commit generated files like this if they change frequently)
+# charts/
