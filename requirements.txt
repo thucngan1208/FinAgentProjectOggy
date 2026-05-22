@@ -1,0 +1,26 @@
+# FinAgent — Python Dependencies
+# Install: pip install -r requirements.txt
+
+# Data Collection
+yfinance>=0.2.40
+requests>=2.31
+httpx>=0.26
+schedule>=1.2
+python-dotenv>=1.0
+
+# Data Cleaning & Processing
+pandas>=2.2
+numpy>=1.26
+scipy>=1.12
+
+# Visualization
+matplotlib>=3.8
+seaborn>=0.13
+plotly>=5.20
+
+# AI Analysis — Google AI Studio (Gemini)
+google-generativeai>=0.5
+Pillow>=10.3
+
+# Utilities
+tqdm>=4.66

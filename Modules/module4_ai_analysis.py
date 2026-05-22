@@ -390,3 +390,328 @@ def offline_comparison(all_data: dict) -> str:
         f"adding non-tech holdings would provide meaningful diversification."
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GEMINI CALLS with automatic fallback to offline
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_chart_image(path: Path):
+    if not path.exists() or path.suffix != ".png":
+        log.warning(f"[Image] Chart not found: {path}")
+        return None
+    try:
+        img = Image.open(path).convert("RGB")
+        log.info(f"[Image] Loaded {path.name} ({img.size[0]}×{img.size[1]}px)")
+        return img
+    except Exception as exc:
+        log.error(f"[Image] Failed to load {path}: {exc}")
+        return None
+
+
+def call_gemini(model, parts: list, retries: int = 2) -> str | None:
+    """
+    Call Gemini. Returns text on success, None on failure.
+    (None → caller will use the offline fallback)
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            response = model.generate_content(parts)
+            return response.text.strip()
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "quota" in err_str or "rate" in err_str or "429" in err_str:
+                wait = RETRY_DELAY * attempt
+                log.warning(f"[Gemini] Rate limit hit. Waiting {wait}s (attempt {attempt}/{retries})...")
+                time.sleep(wait)
+            else:
+                log.warning(f"[Gemini] Error on attempt {attempt}: {exc}")
+                time.sleep(2)
+    log.warning("[Gemini] All attempts failed → switching to offline analysis.")
+    return None
+
+
+# ── Analysis functions ─────────────────────────────────────────────────────────
+
+def analyse_price_trend(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / f"chart1_price_trend_{ticker}.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing the price trend chart for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional trend summary (150-200 words) covering:
+1. Overall price direction over the full period
+2. Price vs 7-day & 30-day SMAs
+3. Bollinger Band width (increasing or decreasing volatility)
+4. Most significant price move (date and magnitude)
+5. One forward-looking technical note
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Trend analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    # Offline fallback
+    log.info(f"[Offline] Trend analysis for {ticker}...")
+    return offline_trend_summary(ticker, ctx)
+
+
+def analyse_anomalies(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / f"chart4_rolling_stats_{ticker}.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing rolling statistics (EMA, volatility, RSI) for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional anomaly analysis (150-200 words) covering:
+1. Periods of abnormally high volatility
+2. RSI extremes (overbought >70, oversold <30)
+3. {ctx.get('outlier_events', 0)} flagged statistical outlier events
+4. Possible macro or company catalysts
+5. Whether anomalies are resolved in recent data
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Anomaly analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info(f"[Offline] Anomaly analysis for {ticker}...")
+    return offline_anomaly_analysis(ticker, ctx)
+
+
+def analyse_risk(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / "chart3_return_distribution.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing daily return distribution for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional risk commentary (150-200 words) covering:
+1. Tail risk — fat tails (leptokurtosis)?
+2. Annualised volatility ({ctx.get('annualised_volatility_pct')}%) vs benchmark (~15-20%)
+3. Worst single-day ({ctx.get('max_daily_drawdown_pct')}%) and best ({ctx.get('best_single_day_pct')}%)
+4. Risk rating (Low/Moderate/High/Very High) with justification
+5. Suitable investor risk profile
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Risk analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info(f"[Offline] Risk analysis for {ticker}...")
+    return offline_risk_commentary(ticker, ctx)
+
+
+def analyse_comparison(model, all_data: dict) -> str:
+    chart_img = load_chart_image(CHART_DIR / "chart2_correlation_heatmap.png")
+
+    if model:
+        summary = {}
+        for ticker, df in all_data.items():
+            ctx = json.loads(build_data_context(ticker, df))
+            summary[ticker] = {
+                "ytd_return_pct":     ctx["ytd_return_pct"],
+                "annualised_vol_pct": ctx["annualised_volatility_pct"],
+                "latest_rsi":         ctx["latest_rsi_14"],
+                "52w_high":           ctx["52w_high"],
+                "52w_low":            ctx["52w_low"],
+            }
+        prompt = f"""
+Analyse the correlation heatmap for: {', '.join(all_data.keys())}
+MULTI-ASSET SUMMARY: {json.dumps(summary, indent=2)}
+Write a professional cross-asset comparison (200-250 words) covering:
+1. Most positively correlated assets (concentration risk)
+2. Assets providing genuine diversification
+3. YTD performance comparison (winner/loser)
+4. Risk-adjusted returns
+5. Portfolio construction insight
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info("[AI] Cross-asset comparison (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info("[Offline] Cross-asset comparison...")
+    return offline_comparison(all_data)
+
+
+# ── HTML Report ────────────────────────────────────────────────────────────────
+
+def build_html_report(analyses, comparison, all_data) -> Path:
+    def img_b64(path: Path) -> str:
+        if path and path.exists() and path.suffix == ".png":
+            with open(path, "rb") as f:
+                return base64.b64encode(f.read()).decode()
+        return ""
+
+    ticker_sections = ""
+    for ticker, analysis in analyses.items():
+        t1 = img_b64(CHART_DIR / f"chart1_price_trend_{ticker}.png")
+        t4 = img_b64(CHART_DIR / f"chart4_rolling_stats_{ticker}.png")
+        ticker_sections += f"""
+        <section class="ticker-section">
+          <h2>{ticker}</h2>
+          <div class="chart-block">
+            <h3>📈 Price Trend & Volume</h3>
+            {"<img src='data:image/png;base64," + t1 + "' alt='Price Trend'/>" if t1 else "<p><em>Chart not available</em></p>"}
+            <div class="ai-commentary">
+              <h4>AI Analysis — Trend Summary</h4>
+              <p>{analysis.get('trend','N/A').replace(chr(10),'<br>')}</p>
+            </div>
+          </div>
+          <div class="chart-block">
+            <h3>📊 Rolling Statistics (EMA, Volatility, RSI)</h3>
+            {"<img src='data:image/png;base64," + t4 + "' alt='Rolling Stats'/>" if t4 else "<p><em>Chart not available</em></p>"}
+            <div class="ai-commentary">
+              <h4>AI Analysis — Anomaly & Event Detection</h4>
+              <p>{analysis.get('anomalies','N/A').replace(chr(10),'<br>')}</p>
+            </div>
+          </div>
+          <div class="chart-block risk-block">
+            <h4>⚠️ AI Analysis — Risk Commentary</h4>
+            <p>{analysis.get('risk','N/A').replace(chr(10),'<br>')}</p>
+          </div>
+        </section><hr/>"""
+
+    corr_b64 = img_b64(CHART_DIR / "chart2_correlation_heatmap.png")
+    dist_b64 = img_b64(CHART_DIR / "chart3_return_distribution.png")
+
+    html = f"""<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8"/>
+  <meta name="viewport" content="width=device-width, initial-scale=1"/>
+  <title>FinAgent AI Analysis Report</title>
+  <style>
+    :root {{--primary:#1a3c5e;--accent:#2980b9;--light:#f4f7fb;--border:#dce3ec;}}
+    body {{font-family:"Segoe UI",Helvetica,Arial,sans-serif;background:var(--light);color:#2c3e50;margin:0;padding:0;}}
+    header {{background:var(--primary);color:white;padding:32px 48px;}}
+    header h1 {{margin:0;font-size:2rem;}}
+    header p  {{margin:6px 0 0;opacity:0.8;}}
+    main {{max-width:1100px;margin:0 auto;padding:32px 24px;}}
+    section.ticker-section {{margin-bottom:48px;}}
+    h2 {{color:var(--primary);border-left:5px solid var(--accent);padding-left:12px;}}
+    h3 {{color:var(--accent);margin-top:24px;}}
+    h4 {{color:#555;margin-bottom:6px;}}
+    .chart-block {{background:white;border:1px solid var(--border);border-radius:8px;padding:20px;margin:20px 0;box-shadow:0 2px 6px rgba(0,0,0,0.05);}}
+    .chart-block img {{width:100%;border-radius:4px;margin-bottom:16px;}}
+    .ai-commentary {{background:#eaf4fc;border-left:4px solid var(--accent);border-radius:0 4px 4px 0;padding:14px 16px;margin-top:12px;font-size:0.92rem;line-height:1.65;}}
+    .risk-block {{background:#fff8e1;border-color:#f39c12;}}
+    .comparison-block {{background:white;border:1px solid var(--border);border-radius:8px;padding:24px;margin:32px 0;box-shadow:0 2px 6px rgba(0,0,0,0.05);}}
+    hr {{border:none;border-top:2px solid var(--border);margin:40px 0;}}
+    footer {{text-align:center;color:#999;font-size:0.82rem;padding:24px;border-top:1px solid var(--border);}}
+  </style>
+</head>
+<body>
+<header>
+  <h1>FinAgent — AI Financial Analysis Report</h1>
+  <p>Generated: {datetime.now().strftime("%d %B %Y, %H:%M")} &nbsp;|&nbsp; Model: {MODEL_NAME} (Google AI Studio) + Offline Engine</p>
+</header>
+<main>
+  <div class="chart-block">
+    <h3>🗺 Asset Correlation Heatmap</h3>
+    {"<img src='data:image/png;base64," + corr_b64 + "' alt='Correlation Heatmap'/>" if corr_b64 else ""}
+  </div>
+  <div class="chart-block">
+    <h3>📉 Daily Return Distributions</h3>
+    {"<img src='data:image/png;base64," + dist_b64 + "' alt='Return Distribution'/>" if dist_b64 else ""}
+  </div>
+  <div class="comparison-block">
+    <h3>🔄 Cross-Asset Comparison (AI Analysis)</h3>
+    <div class="ai-commentary">
+      <p>{comparison.replace(chr(10),'<br>')}</p>
+    </div>
+  </div>
+  <hr/>
+  {ticker_sections}
+</main>
+<footer>
+  <p>FinAgent &mdash; AI-Powered Financial Data Agent &mdash; IT Application in Banking and Finance, 2026</p>
+  <p><em>This report is for educational purposes only and does not constitute financial advice.</em></p>
+</footer>
+</body>
+</html>"""
+
+    path = REPORT_DIR / "ai_analysis.html"
+    path.write_text(html, encoding="utf-8")
+    log.info(f"[Report] HTML report saved → {path}")
+    open_in_vscode(path)
+    return path
+
+
+# ── Orchestrator ───────────────────────────────────────────────────────────────
+
+def run_ai_analysis(tickers=None) -> Path:
+    log.info("=" * 60)
+    log.info("FinAgent AI Analysis — started")
+    log.info("=" * 60)
+
+    if tickers is None:
+        tickers = sorted({p.stem.replace("clean_", "") for p in CLEAN_DIR.glob("clean_*.csv")})
+        log.info(f"Auto-discovered tickers: {tickers}")
+
+    all_data = {}
+    for ticker in tickers:
+        path = CLEAN_DIR / f"clean_{ticker}.csv"
+        if path.exists():
+            all_data[ticker] = pd.read_csv(path, index_col=0, parse_dates=True)
+
+    if not all_data:
+        raise FileNotFoundError("No data found. Please run module2 first.")
+
+    # Attempt Gemini connection — if it fails, model = None → use full offline mode
+    model = None
+    if GOOGLE_API_KEY:
+        try:
+            model = get_gemini_model()
+            log.info("[Gemini] ✓ Connected successfully.")
+        except Exception as exc:
+            log.warning(f"[Gemini] Could not connect ({exc}) → using offline analysis.")
+    else:
+        log.info("[Gemini] No API key provided → using offline analysis.")
+
+    # Per-ticker analyses
+    analyses = {}
+    for ticker, df in all_data.items():
+        log.info(f"\n── AI Analysis for {ticker} ──")
+        analyses[ticker] = {
+            "trend":     analyse_price_trend(model=model, ticker=ticker, df=df),
+            "anomalies": analyse_anomalies(model=model, ticker=ticker, df=df),
+            "risk":      analyse_risk(model=model, ticker=ticker, df=df),
+        }
+
+    comparison = analyse_comparison(model=model, all_data=all_data)
+
+    # Save JSON
+    json_path = REPORT_DIR / "ai_analyses_raw.json"
+    json_path.write_text(
+        json.dumps({"generated_at": datetime.now().isoformat(), "model": MODEL_NAME,
+                    "per_ticker": analyses, "comparison": comparison}, indent=2),
+        encoding="utf-8",
+    )
+
+    report_path = build_html_report(analyses, comparison, all_data)
+
+    log.info("=" * 60)
+    log.info(f"AI Analysis complete → {report_path}")
+    log.info("=" * 60)
+    return report_path
+
+
+if __name__ == "__main__":
+    report = run_ai_analysis()
+    print(f"\n✅ Report ready: {report}")
