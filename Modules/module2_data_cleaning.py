@@ -191,3 +191,60 @@ def engineer_features(df: pd.DataFrame, ticker: str) -> pd.DataFrame:
 
 
 # ── Step 7: Save ─────────────────────────────────────────────────────────────
+
+def save_clean(df: pd.DataFrame, ticker: str) -> Path:
+    path = CLEAN_DIR / f"clean_{ticker}.csv"
+    df.to_csv(path)
+    log.info(f"[Save] {ticker}: {len(df)} rows → {path}")
+    return path
+
+
+# ── Orchestrator ──────────────────────────────────────────────────────────────
+
+def clean_ticker(ticker: str) -> pd.DataFrame | None:
+    df = load_raw_prices(ticker)
+    if df is None:
+        return None
+    df = normalise_types(df, ticker)
+    df = remove_duplicates(df, ticker)
+    df = handle_missing(df, ticker)
+    df = detect_outliers(df, ticker)
+    df = engineer_features(df, ticker)
+    save_clean(df, ticker)
+    return df
+
+
+def run_cleaning(tickers=None):
+    log.info("=" * 60)
+    log.info("FinAgent Data Cleaning — started")
+    log.info("=" * 60)
+
+    if tickers is None:
+        tickers = sorted({
+            p.stem.replace("prices_", "")
+            for p in RAW_DIR.glob("prices_*.csv")
+        })
+        log.info(f"Auto-discovered tickers: {tickers}")
+
+    results = {}
+    for ticker in tickers:
+        log.info(f"\n── Processing {ticker} ──")
+        df = clean_ticker(ticker)
+        if df is not None:
+            results[ticker] = df
+
+    report_path = CLEAN_DIR / "cleaning_report.json"
+    report_path.write_text(
+        json.dumps({"generated_at": datetime.now().isoformat(), "tickers": cleaning_report},
+                   indent=2, default=str),
+        encoding="utf-8",
+    )
+    log.info(f"\nCleaning report → {report_path}")
+    log.info("=" * 60)
+    log.info(f"Cleaning complete. Processed: {list(results.keys())}")
+    log.info("=" * 60)
+    return results
+
+
+if __name__ == "__main__":
+    run_cleaning()
