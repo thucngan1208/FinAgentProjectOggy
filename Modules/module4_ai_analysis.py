@@ -390,3 +390,160 @@ def offline_comparison(all_data: dict) -> str:
         f"adding non-tech holdings would provide meaningful diversification."
     )
 
+
+# ══════════════════════════════════════════════════════════════════════════════
+#  GEMINI CALLS with automatic fallback to offline
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_chart_image(path: Path):
+    if not path.exists() or path.suffix != ".png":
+        log.warning(f"[Image] Chart not found: {path}")
+        return None
+    try:
+        img = Image.open(path).convert("RGB")
+        log.info(f"[Image] Loaded {path.name} ({img.size[0]}×{img.size[1]}px)")
+        return img
+    except Exception as exc:
+        log.error(f"[Image] Failed to load {path}: {exc}")
+        return None
+
+
+def call_gemini(model, parts: list, retries: int = 2) -> str | None:
+    """
+    Call Gemini. Returns text on success, None on failure.
+    (None → caller will use the offline fallback)
+    """
+    for attempt in range(1, retries + 1):
+        try:
+            response = model.generate_content(parts)
+            return response.text.strip()
+        except Exception as exc:
+            err_str = str(exc).lower()
+            if "quota" in err_str or "rate" in err_str or "429" in err_str:
+                wait = RETRY_DELAY * attempt
+                log.warning(f"[Gemini] Rate limit hit. Waiting {wait}s (attempt {attempt}/{retries})...")
+                time.sleep(wait)
+            else:
+                log.warning(f"[Gemini] Error on attempt {attempt}: {exc}")
+                time.sleep(2)
+    log.warning("[Gemini] All attempts failed → switching to offline analysis.")
+    return None
+
+
+# ── Analysis functions ─────────────────────────────────────────────────────────
+
+def analyse_price_trend(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / f"chart1_price_trend_{ticker}.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing the price trend chart for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional trend summary (150-200 words) covering:
+1. Overall price direction over the full period
+2. Price vs 7-day & 30-day SMAs
+3. Bollinger Band width (increasing or decreasing volatility)
+4. Most significant price move (date and magnitude)
+5. One forward-looking technical note
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Trend analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    # Offline fallback
+    log.info(f"[Offline] Trend analysis for {ticker}...")
+    return offline_trend_summary(ticker, ctx)
+
+
+def analyse_anomalies(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / f"chart4_rolling_stats_{ticker}.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing rolling statistics (EMA, volatility, RSI) for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional anomaly analysis (150-200 words) covering:
+1. Periods of abnormally high volatility
+2. RSI extremes (overbought >70, oversold <30)
+3. {ctx.get('outlier_events', 0)} flagged statistical outlier events
+4. Possible macro or company catalysts
+5. Whether anomalies are resolved in recent data
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Anomaly analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info(f"[Offline] Anomaly analysis for {ticker}...")
+    return offline_anomaly_analysis(ticker, ctx)
+
+
+def analyse_risk(model, ticker: str, df: pd.DataFrame) -> str:
+    chart_img = load_chart_image(CHART_DIR / "chart3_return_distribution.png")
+    data_ctx  = build_data_context(ticker, df)
+    ctx       = json.loads(data_ctx)
+
+    if model:
+        prompt = f"""
+You are analysing daily return distribution for {ticker}.
+STRUCTURED DATA CONTEXT: {data_ctx}
+Write a professional risk commentary (150-200 words) covering:
+1. Tail risk — fat tails (leptokurtosis)?
+2. Annualised volatility ({ctx.get('annualised_volatility_pct')}%) vs benchmark (~15-20%)
+3. Worst single-day ({ctx.get('max_daily_drawdown_pct')}%) and best ({ctx.get('best_single_day_pct')}%)
+4. Risk rating (Low/Moderate/High/Very High) with justification
+5. Suitable investor risk profile
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info(f"[AI] Risk analysis for {ticker} (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info(f"[Offline] Risk analysis for {ticker}...")
+    return offline_risk_commentary(ticker, ctx)
+
+
+def analyse_comparison(model, all_data: dict) -> str:
+    chart_img = load_chart_image(CHART_DIR / "chart2_correlation_heatmap.png")
+
+    if model:
+        summary = {}
+        for ticker, df in all_data.items():
+            ctx = json.loads(build_data_context(ticker, df))
+            summary[ticker] = {
+                "ytd_return_pct":     ctx["ytd_return_pct"],
+                "annualised_vol_pct": ctx["annualised_volatility_pct"],
+                "latest_rsi":         ctx["latest_rsi_14"],
+                "52w_high":           ctx["52w_high"],
+                "52w_low":            ctx["52w_low"],
+            }
+        prompt = f"""
+Analyse the correlation heatmap for: {', '.join(all_data.keys())}
+MULTI-ASSET SUMMARY: {json.dumps(summary, indent=2)}
+Write a professional cross-asset comparison (200-250 words) covering:
+1. Most positively correlated assets (concentration risk)
+2. Assets providing genuine diversification
+3. YTD performance comparison (winner/loser)
+4. Risk-adjusted returns
+5. Portfolio construction insight
+"""
+        parts  = [chart_img, prompt] if chart_img else [prompt]
+        log.info("[AI] Cross-asset comparison (Gemini)...")
+        result = call_gemini(model, parts)
+        if result:
+            time.sleep(2)
+            return result
+
+    log.info("[Offline] Cross-asset comparison...")
+    return offline_comparison(all_data)
