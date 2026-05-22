@@ -99,7 +99,95 @@ def collect_stock_prices(tickers: list[str] = ASSETS, period: str = PERIOD) -> d
 
 # ── Source 2: Financial Statements (yfinance) ────────────────────────────────
 
+def collect_financial_statements(tickers: list[str] = ASSETS) -> dict[str, dict]:
+    """
+    Fetch quarterly income statement, balance sheet, and cash flow
+    for each ticker via yfinance.
 
+    Returns:
+        dict mapping ticker → {"income": df, "balance": df, "cashflow": df}
+    """
+    results = {}
+    for ticker in tickers:
+        log.info(f"[Financials] Fetching statements for {ticker} ...")
+        def fetch():
+            tk = yf.Ticker(ticker)
+            return {
+                "income":    tk.quarterly_financials.T,   # transpose → dates as rows
+                "balance":   tk.quarterly_balance_sheet.T,
+                "cashflow":  tk.quarterly_cashflow.T,
+            }
+
+        statements = retry(fetch)
+        if statements:
+            for stmt_name, df in statements.items():
+                path = RAW_DIR / f"stmt_{ticker}_{stmt_name}.csv"
+                df.to_csv(path)
+                log.info(f"  ✓ Saved {stmt_name} ({len(df)} periods) → {path}")
+            results[ticker] = statements
+        else:
+            log.error(f"  ✗ Could not fetch statements for {ticker}")
+
+    return results
+
+
+# ── Source 3: News & Sentiment (NewsAPI) ─────────────────────────────────────
+
+def collect_news(query: str = "stock market financial", page_size: int = 50) -> pd.DataFrame:
+    """
+    Fetch recent financial news headlines from NewsAPI.
+
+    Requires:
+        NEWS_API_KEY env var  (free tier: https://newsapi.org)
+
+    Returns:
+        DataFrame with columns [publishedAt, source, title, description, url]
+    """
+    if not NEWS_API_KEY:
+        log.warning("[News] NEWS_API_KEY not set — skipping news collection.")
+        return pd.DataFrame()
+
+    url = "https://newsapi.org/v2/everything"
+    params = {
+        "q":        query,
+        "language": "en",
+        "sortBy":   "publishedAt",
+        "pageSize": page_size,
+        "from":     (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d"),
+        "apiKey":   NEWS_API_KEY,
+    }
+
+    log.info(f"[News] Fetching headlines for query='{query}' ...")
+
+    def fetch():
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        if data.get("status") != "ok":
+            raise ValueError(f"API error: {data.get('message')}")
+        return data["articles"]
+
+    articles = retry(fetch)
+    if not articles:
+        return pd.DataFrame()
+
+    rows = [
+        {
+            "publishedAt": a["publishedAt"],
+            "source":      a["source"]["name"],
+            "title":       a["title"],
+            "description": a.get("description", ""),
+            "url":         a["url"],
+        }
+        for a in articles
+    ]
+    df = pd.DataFrame(rows)
+    df["publishedAt"] = pd.to_datetime(df["publishedAt"])
+
+    path = RAW_DIR / "news_headlines.csv"
+    df.to_csv(path, index=False)
+    log.info(f"  ✓ Saved {len(df)} articles → {path}")
+    return df
 
 # ── Source 4a: Exchange Rates (Alpha Vantage) ────────────────────────────────
 
