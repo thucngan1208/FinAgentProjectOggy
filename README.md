@@ -1,7 +1,7 @@
 # FinAgent — AI-Powered Financial Data Agent
 
 > **Midterm Group Project** · IT Application in Banking and Finance · 2026  
-> **Team:** [TEAM NAME] · **Deadline:** 27 May 2026
+> **Team:** [OGGY] · **Deadline:** 27 May 2026
 
 ![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python)
 ![License](https://img.shields.io/badge/License-MIT-green)
